@@ -33,13 +33,17 @@ public class Sql2PoJo {
 
     static final String from = " from ";
 
+    static final String lineEnd = ";";
+
+    static final String importLombok = "import lombok.Data;";
+
     public static void main(String[] args) throws IOException {
         String filePath = "C:\\Users\\Administrator\\Videos\\Captures\\1.txt";
         String packageName = "personal.stone.test";
         String fileName =  "Test";
         String sql = getFileSqlString(filePath);
         System.out.println(sql);
-        sql2PoJo(sql, sourcePath, packageName, "Test");
+        sql2PoJo(sql, sourcePath, packageName, fileName);
     }
 
     private static void sql2PoJo(String sql, String pojoPath, String packageName, String fileName) throws IOException {
@@ -58,7 +62,8 @@ public class Sql2PoJo {
         // 这里使用了try-with-resources方法来关闭流，不用手动关闭
         try (BufferedWriter writer =
                      Files.newBufferedWriter(path, StandardCharsets.UTF_8)) {
-            writer.write("package " + packageName + lineFeed + lineFeed + "@Data" + lineFeed
+            writer.write("package " + packageName + lineEnd + lineFeed + lineFeed +
+                    importLombok + lineFeed + lineFeed + "@Data" + lineFeed
                     + "public class "+ fileName + " {"+lineFeed);
 
         }
