@@ -1,0 +1,299 @@
+pacakage personal.stone.util;
+
+
+import com.baomidou.mybatisplus.annotation.TableId;
+import com.baomidou.mybatisplus.annotation.TableName;
+import com.baomidou.mybatisplus.generator.config.DataSourceConfig;
+
+import java.io.File;
+import java.io.FileFilter;
+import java.io.IOException;
+import java.lang.reflect.Field;
+import java.math.BigDecimal;
+import java.net.JarURLConnection;
+import java.net.URL;
+import java.net.URLDecoder;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.util.Enumeration;
+import java.util.Iterator;
+import java.util.LinkedHashSet;
+import java.util.Set;
+import java.util.jar.JarEntry;
+import java.util.jar.JarFile;
+
+public class MybatisTableGenerator {
+
+    public static void main(String[] args) {
+        //包名
+        String packageName = "com.XXXXX.XXXXX";
+        if(args != null && args.length > 0){
+            packageName = args[0];
+        } 
+        String packageDirName = packageName.replace('.', '/');
+        // 第一个class类的集合
+        Set<Class<?>> classes = new LinkedHashSet<Class<?>>();
+        // 是否循环迭代
+        boolean recursive = true;
+        // 获取包的名字 并进行替换
+        // 数据源配置
+        DataSourceConfig dsc = new DataSourceConfig();
+        dsc.setUrl("jdbc:mysql://172.16.50.100:3306/test?useUnicode=true&useSSL=false&characterEncoding=utf8&serverTimezone=Asia/Shanghai");
+        dsc.setDriverName("com.mysql.cj.jdbc.Driver");
+        dsc.setUsername("root");
+        dsc.setPassword("root");
+        Connection conn = dsc.getConn();
+
+        
+        
+        Enumeration<URL> dirs;
+        try {
+            dirs = Thread.currentThread().getContextClassLoader().getResources(packageDirName);
+            while(dirs.hasMoreElements()){
+                URL url = dirs.nextElement();
+                String protocol = url.getProtocol();
+                // 如果是以文件的形式保存在服务器上
+                if ("file".equals(protocol)) {
+                    System.err.println("file类型的扫描");
+                    // 获取包的物理路径
+                    String filePath = URLDecoder.decode(url.getFile(), "UTF-8");
+                    // 以文件的方式扫描整个包下的文件 并添加到集合中
+                    findAndAddClassesInPackageByFile(packageName, filePath,
+                            recursive, classes);
+                } else if ("jar".equals(protocol)) {
+                    // 如果是jar包文件
+                    // 定义一个JarFile
+                    System.err.println("jar类型的扫描");
+                    JarFile jar;
+                    try {
+                        // 获取jar
+                        jar = ((JarURLConnection) url.openConnection())
+                                .getJarFile();
+                        // 从此jar包 得到一个枚举类
+                        Enumeration<JarEntry> entries = jar.entries();
+                        // 同样的进行循环迭代
+                        while (entries.hasMoreElements()) {
+                            // 获取jar里的一个实体 可以是目录 和一些jar包里的其他文件 如META-INF等文件
+                            JarEntry entry = entries.nextElement();
+                            String name = entry.getName();
+                            // 如果是以/开头的
+                            if (name.charAt(0) == '/') {
+                                // 获取后面的字符串
+                                name = name.substring(1);
+                            }
+                            // 如果前半部分和定义的包名相同
+                            if (name.startsWith(packageDirName)) {
+                                int idx = name.lastIndexOf('/');
+                                // 如果以"/"结尾 是一个包
+                                if (idx != -1) {
+                                    // 获取包名 把"/"替换成"."
+                                    packageName = name.substring(0, idx)
+                                            .replace('/', '.');
+                                }
+                                // 如果可以迭代下去 并且是一个包
+                                if ((idx != -1) || recursive) {
+                                    // 如果是一个.class文件 而且不是目录
+                                    if (name.endsWith(".class")
+                                            && !entry.isDirectory()) {
+                                        // 去掉后面的".class" 获取真正的类名
+                                        String className = name.substring(
+                                                packageName.length() + 1, name
+                                                        .length() - 6);
+                                        try {
+                                            // 添加到classes
+                                            classes.add(Class
+                                                    .forName(packageName + '.'
+                                                            + className));
+                                        } catch (ClassNotFoundException e) {
+                                            // log
+                                            // .error("添加用户自定义视图类错误 找不到此类的.class文件");
+                                            e.printStackTrace();
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } catch (IOException e) {
+                        // log.error("在扫描用户定义视图时从jar包获取文件出错");
+                        e.printStackTrace();
+                    }
+                }
+            }
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+
+        if(classes != null && !classes.isEmpty()){
+            //解析并拼接DDL语句
+            Iterator<Class<?>> iterator = classes.iterator();
+            while(iterator.hasNext()){
+                Class<?> clazz = iterator.next();
+                createDDLAndTable(clazz, conn);
+            }
+        }
+    }
+
+
+    private static void createDDLAndTable(Class<?> clazz, Connection conn) {
+        try {
+            Deprecated deprecatedAnno = clazz.getAnnotation(Deprecated.class);
+            if(deprecatedAnno != null){
+                return;
+            }
+            StringBuilder ddl = new StringBuilder();
+            TableName tableNameAnno = clazz.getAnnotation(TableName.class);
+            String tableName = null;
+            if(null != tableNameAnno){
+                tableName = tableNameAnno.value();
+            }else {
+                tableName = getUnderLineName(clazz.getSimpleName());
+            }
+            ResultSet resultSet =  conn.getMetaData().getTables(null, null, tableName, null);
+            if (resultSet.next()) {//表已存在
+                System.out.println("Table "+ tableName+" existed!");
+                return;
+            }
+            ddl.append("create table ");
+            ddl.append(tableName);
+            ddl.append("(");
+            Field[] declaredFields = clazz.getDeclaredFields();
+            if(declaredFields != null && declaredFields.length > 0){
+                for (int i=0;i< declaredFields.length;++i){
+                    Field f = declaredFields[i];
+                    String name = f.getName();
+                    if(name.equals("serialVersionUID")){
+                        continue;
+                    }
+                    String fieldName = getUnderLineName(name);
+                    ddl.append(fieldName);
+                    ddl.append(BLANK);
+                    Class<?> type = f.getType();
+                    if(type.equals(Integer.class)){
+                        ddl.append("int(11) ");
+                        if(fieldName.equals("id") || fieldName.equals("number")){
+                            ddl.append("not null ");
+                        }
+                        TableId idAnno = f.getAnnotation(TableId.class);
+                        if(idAnno != null){
+                            ddl.append("AUTO_INCREMENT ");
+                        }
+                        ddl.append(",");
+                    } else if(type.equals(String.class)){
+                        ddl.append("varchar(60), ");
+                    }else if(type.equals(LocalDateTime.class) || type.equals(LocalDate.class)){
+                        ddl.append("timestamp ");
+                        if(fieldName.contains("update")){
+                            ddl.append("default CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP ");
+                        }
+                        ddl.append(",");
+                    }else if(type.equals(BigDecimal.class)) {
+                        if(fieldName.equals("longitude") || fieldName.equals("latitude")){
+                            ddl.append("decimal(12, 6), ");
+                        }else{
+                            ddl.append("decimal(10, 2), ");
+                        }
+                    }else if(type.equals(Boolean.class) || type.getName().equals("boolean")){
+                        ddl.append("tinyint(1)  comment '是否删除(0：否 1：是)', ");
+                    } else if (type.equals(Double.class)) {
+                        ddl.append("double(10,2), ");
+                    } else{
+                        System.out.println("错误的type:"+type.getName());
+                    }
+                }
+                ddl.append("primary key (id));");
+            }
+            System.out.println("创建表: "+tableName+"的DDL语句是:"+ddl.toString());
+            System.out.println("-----------------------------------------------------------");
+            PreparedStatement preparedStatement = conn.prepareStatement(ddl.toString());
+            if(!preparedStatement.execute()){
+                System.out.println("create table "+tableName+" success!");
+            }else{
+                System.err.println("create table "+tableName+" failed!");
+            }
+            System.out.println("++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++");
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+    }
+    static final String UNDER_LINE = "_";
+
+    static final String BLANK = " ";
+    private static String getUnderLineName(String simpleTableName){
+        assert simpleTableName != null;
+        String[] split = simpleTableName.split("");
+        StringBuilder sb = new StringBuilder();
+        for(int i=0;i< split.length;++i){
+            String s = split[i];
+            if(!isSmall(s)){
+                //大写
+                if(sb.length()==0){
+                    sb.append(s.toLowerCase());
+                }else{
+                    sb.append(UNDER_LINE);
+                    sb.append(s.toLowerCase());
+                }
+            }else{
+                //小写
+                sb.append(s);
+            }
+        }
+        return sb.toString();
+    }
+
+    private static boolean isSmall(String s){
+        return s.equals(s.toLowerCase());
+    }
+
+    /**
+     * 以文件的形式来获取包下的所有Class
+     *
+     * @param packageName
+     * @param packagePath
+     * @param recursive
+     * @param classes
+     */
+    public static void findAndAddClassesInPackageByFile(String packageName,
+                                                        String packagePath, final boolean recursive, Set<Class<?>> classes) {
+        // 获取此包的目录 建立一个File
+        File dir = new File(packagePath);
+        // 如果不存在或者 也不是目录就直接返回
+        if (!dir.exists() || !dir.isDirectory()) {
+            // log.warn("用户定义包名 " + packageName + " 下没有任何文件");
+            return;
+        }
+        // 如果存在 就获取包下的所有文件 包括目录
+        File[] dirfiles = dir.listFiles(new FileFilter() {
+            // 自定义过滤规则 如果可以循环(包含子目录) 或则是以.class结尾的文件(编译好的java类文件)
+            public boolean accept(File file) {
+                return (recursive && file.isDirectory())
+                        || (file.getName().endsWith(".class"));
+            }
+        });
+        // 循环所有文件
+        for (File file : dirfiles) {
+            // 如果是目录 则继续扫描
+            if (file.isDirectory()) {
+                findAndAddClassesInPackageByFile(packageName + "."
+                                + file.getName(), file.getAbsolutePath(), recursive,
+                        classes);
+            } else {
+                // 如果是java类文件 去掉后面的.class 只留下类名
+                String className = file.getName().substring(0,
+                        file.getName().length() - 6);
+                try {
+                    // 添加到集合中去
+                    //classes.add(Class.forName(packageName + '.' + className));
+                    //经过回复同学的提醒，这里用forName有一些不好，会触发static方法，没有使用classLoader的load干净
+                    classes.add(Thread.currentThread().getContextClassLoader().loadClass(packageName + '.' + className));
+                } catch (ClassNotFoundException e) {
+                    // log.error("添加用户自定义视图类错误 找不到此类的.class文件");
+                    e.printStackTrace();
+                }
+            }
+        }
+    }
+}
